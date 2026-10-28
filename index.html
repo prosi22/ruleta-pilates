@@ -177,7 +177,9 @@
   .add-prize-btn { width:100%; background:transparent; border:1px dashed var(--accent-border); border-radius:var(--radius-sm); padding:12px; font-size:13px; font-weight:600; color:var(--muted); cursor:pointer; margin-top:8px; }
   .save-btn { width:100%; background:var(--accent); color:var(--on-accent); border:none; border-radius:var(--radius-sm); padding:15px; font-size:14px; font-weight:700; cursor:pointer; margin-top:4px; }
   .save-btn:disabled { opacity:0.5; cursor:not-allowed; }
-  .log-list { display:flex; flex-direction:column; gap:6px; max-height:260px; overflow-y:auto; }
+  .log-list { display:flex; flex-direction:column; gap:6px; max-height:440px; overflow-y:auto; }
+  .log-tools { display:grid; grid-template-columns:1fr 120px; gap:8px; margin-bottom:8px; }
+  .log-count { font-size:11px; color:var(--muted); margin-bottom:8px; }
   .log-item { display:flex; align-items:center; gap:10px; background:var(--surface2); border-radius:var(--radius-xs); padding:8px 10px; font-size:11px; }
   .log-emoji { font-size:16px; }
   .log-prize { font-weight:600; color:var(--text); }
@@ -320,18 +322,37 @@
 
     <div class="tab-panel active" id="tab-stats">
       <div class="admin-section">
-        <div class="admin-section-title">Hoy (este dispositivo)</div>
+        <div class="admin-section-title">Hoy</div>
         <div class="stats-row">
-          <div class="stat-card"><div class="stat-value" id="statScans">0</div><div class="stat-label">Escaneos</div></div>
-          <div class="stat-card"><div class="stat-value" id="statSpins">0</div><div class="stat-label">Giros</div></div>
-          <div class="stat-card"><div class="stat-value" id="statPrizes">0</div><div class="stat-label">Premios</div></div>
+          <div class="stat-card"><div class="stat-value" id="statScans">–</div><div class="stat-label">Escaneos</div></div>
+          <div class="stat-card"><div class="stat-value" id="statSpins">–</div><div class="stat-label">Giros</div></div>
+          <div class="stat-card"><div class="stat-value" id="statRedeemedToday">–</div><div class="stat-label">Canjeados</div></div>
         </div>
       </div>
       <div class="admin-section">
-        <div class="admin-section-title">Últimos giros</div>
-        <div class="log-list" id="logList"><div class="log-empty">Sin giros aún</div></div>
+        <div class="admin-section-title">Total histórico</div>
+        <div class="stats-row">
+          <div class="stat-card"><div class="stat-value" id="statTotal">–</div><div class="stat-label">Giros</div></div>
+          <div class="stat-card"><div class="stat-value" id="statPending">–</div><div class="stat-label">Pendientes</div></div>
+          <div class="stat-card"><div class="stat-value" id="statRedeemed">–</div><div class="stat-label">Canjeados</div></div>
+        </div>
+      </div>
+      <div class="admin-section">
+        <div class="admin-section-title">Historial de giros</div>
+        <div class="log-tools">
+          <input class="field-input" id="logSearch" placeholder="🔎 Buscar ID (ej. PIL-1028-W4RZ) o premio" oninput="renderLogs()">
+          <select class="field-input" id="logFilter" onchange="renderLogs()">
+            <option value="all">Todos</option>
+            <option value="pending">Pendientes</option>
+            <option value="redeemed">Canjeados</option>
+          </select>
+        </div>
+        <div class="log-count" id="logCount"></div>
+        <div class="log-list" id="logList"><div class="log-empty">Cargando...</div></div>
       </div>
       <button class="btn-secondary" onclick="refreshLogs()">↻ Actualizar</button>
+      <div style="height:8px;"></div>
+      <button class="btn-secondary" onclick="exportLogsCSV()">⬇️ Descargar historial (CSV)</button>
     </div>
 
     <div class="tab-panel" id="tab-premios">
@@ -473,8 +494,22 @@ async function sbFetch(path, method='GET', body=null){
 async function sbGetConfig(key){ const rows = await sbFetch(`config?key=eq.${key}&select=value`); return rows?.[0]?.value ?? null; }
 async function sbSetConfig(key,value){ await sbFetch(`config?key=eq.${key}`,'PATCH',{value}); }
 async function sbLogReviewSnapshot(rating,count){ try{ await sbFetch('reviews_history','POST',{rating,review_count:count}); }catch(e){ console.warn('Review snapshot error:',e); } }
-async function sbGetReviewHistory(){ return await sbFetch('reviews_history?select=*&order=created_at.desc&limit=30'); }
-async function sbGetLogs(){ return await sbFetch('logs?select=id,prize,emoji,code,spin_id,redeemed,redeemed_at,created_at&order=created_at.desc&limit=30'); }
+async function sbGetReviewHistory(){ return await sbFetch('reviews_history?select=*&order=created_at.desc&limit=100'); }
+async function sbGetLogs(){
+  // Trae todos los giros en páginas de 1000 (límite por petición de Supabase)
+  const all=[]; const PAGE=1000;
+  for(let off=0; off<50000; off+=PAGE){
+    const rows=await sbFetch(`logs?select=id,prize,emoji,code,spin_id,redeemed,redeemed_at,created_at&order=created_at.desc&limit=${PAGE}&offset=${off}`);
+    all.push(...(rows||[]));
+    if(!rows || rows.length<PAGE) break;
+  }
+  return all;
+}
+function startOfTodayISO(){ const d=new Date(); d.setHours(0,0,0,0); return d.toISOString(); }
+async function sbCountScansToday(){
+  const rows=await sbFetch(`reviews_history?select=id&created_at=gte.${encodeURIComponent(startOfTodayISO())}&limit=10000`);
+  return (rows||[]).length;
+}
 
 function setSyncDot(state){ document.getElementById('syncDot').className='sync-dot'+(state==='off'?'':' '+state); }
 
@@ -643,7 +678,7 @@ async function showPrize(){
   document.getElementById('codeBox').style.display = retry ? 'none' : '';
   document.getElementById('waBtn').style.display  = retry ? 'none' : '';
   if(!retry){ bumpStat('prizes'); setTimeout(launchConfetti,300); }
-  const entry={emoji:currentPrize.emoji,prize:currentPrize.name,code:currentPrize.code,spin_id:currentSpinId,redeemed:false,time:new Date().toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})};
+  const entry={emoji:currentPrize.emoji,prize:currentPrize.name,code:currentPrize.code,spin_id:currentSpinId,redeemed:false,created_at:new Date().toISOString(),time:new Date().toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})};
   if(sbConnected){
     try{ setSyncDot('loading'); await sbFetch('logs','POST',{prize:entry.prize,emoji:entry.emoji,code:entry.code,spin_id:currentSpinId,redeemed:false}); setSyncDot('ok'); }
     catch(e){ setSyncDot('err'); console.warn('Log error:',e); }
@@ -708,9 +743,6 @@ function populateAdmin(){
   else if(SB_URL){ statusEl.textContent='⚠️ Error de conexión: modo local'; cardEl.className='cloud-status error'; msg.textContent='❌ Error de conexión: revisa la URL y la key'; }
   else { statusEl.textContent='📱 Modo local (solo este dispositivo)'; cardEl.className='cloud-status'; msg.textContent='⚪ Sin Supabase: los datos solo se guardan en este dispositivo'; }
   const s=getStats();
-  document.getElementById('statScans').textContent=s.scans;
-  document.getElementById('statSpins').textContent=s.spins;
-  document.getElementById('statPrizes').textContent=s.prizes;
   document.getElementById('cfgEmoji').value=config.emoji||'';
   document.getElementById('cfgName').value=config.name||'';
   document.getElementById('cfgType').value=config.type||'';
@@ -722,7 +754,7 @@ function populateAdmin(){
   renderPrizeEditor(); refreshLogs();
   document.getElementById('reviewRating').textContent=config.rating||'—';
   document.getElementById('reviewCount').textContent=config.reviews||'—';
-  document.getElementById('reviewScans').textContent=s.scans||0;
+  document.getElementById('reviewScans').textContent=sbConnected?'…':(s.scans||0);
 }
 
 // Probabilidad real = peso / suma de pesos
@@ -787,6 +819,7 @@ async function refreshReviews(){
   document.getElementById('reviewRating').textContent=config.rating||'—';
   document.getElementById('reviewCount').textContent=config.reviews||'—';
   document.getElementById('reviewScans').textContent=getStats().scans||0;
+  if(sbConnected) sbCountScansToday().then(n=>{document.getElementById('reviewScans').textContent=n;}).catch(()=>{});
   const list=document.getElementById('reviewHistoryList');
   if(!sbConnected){ list.innerHTML='<div class="log-empty">Sin conexión a Supabase</div>'; return; }
   try{
@@ -821,18 +854,44 @@ function disconnectSupabase(){
   init();
 }
 
+let allLogs=[];   // historial completo cargado en el panel
+let scansToday=null;
+function fmtDate(iso){ return new Date(iso).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}); }
 async function refreshLogs(){
-  let logs=[];
+  document.getElementById('logList').innerHTML='<div class="log-empty">Cargando...</div>';
   if(sbConnected){
     try{
       setSyncDot('loading');
-      const rows=await sbGetLogs();
-      logs=(rows||[]).map(r=>({id:r.id,emoji:r.emoji||'🎁',prize:r.prize,code:r.code,spin_id:r.spin_id,redeemed:r.redeemed||false,
-        time:new Date(r.created_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}));
+      const [rows, scans]=await Promise.all([sbGetLogs(), sbCountScansToday().catch(()=>null)]);
+      allLogs=(rows||[]).map(r=>({id:r.id,emoji:r.emoji||'🎁',prize:r.prize,code:r.code,spin_id:r.spin_id,redeemed:!!r.redeemed,redeemed_at:r.redeemed_at,created_at:r.created_at,time:fmtDate(r.created_at)}));
+      scansToday=scans;
       setSyncDot('ok');
-    }catch(e){ setSyncDot('err'); logs=lsGet('logs',[]); }
-  } else logs=lsGet('logs',[]);
-  renderLogs(logs);
+    }catch(e){ setSyncDot('err'); showToast('❌ No se pudo cargar el historial: '+e.message); allLogs=localLogsNormalized(); scansToday=null; }
+  } else { allLogs=localLogsNormalized(); scansToday=null; }
+  renderStats(); renderLogs();
+}
+function localLogsNormalized(){ return lsGet('logs',[]).map(l=>({...l, created_at:l.created_at||null})); }
+function renderStats(){
+  const t0=new Date(); t0.setHours(0,0,0,0);
+  const isToday=iso=>iso && new Date(iso)>=t0;
+  const real=allLogs.filter(l=>!isRetry({code:l.code}));
+  const local=getStats();
+  document.getElementById('statScans').textContent = scansToday ?? local.scans;
+  document.getElementById('statSpins').textContent = sbConnected ? allLogs.filter(l=>isToday(l.created_at)).length : local.spins;
+  document.getElementById('statRedeemedToday').textContent = real.filter(l=>l.redeemed && isToday(l.redeemed_at)).length;
+  document.getElementById('statTotal').textContent = allLogs.length;
+  document.getElementById('statPending').textContent = real.filter(l=>!l.redeemed).length;
+  document.getElementById('statRedeemed').textContent = real.filter(l=>l.redeemed).length;
+}
+function exportLogsCSV(){
+  if(!allLogs.length){ showToast('⚠️ No hay giros para exportar'); return; }
+  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const head=['Fecha','ID verificación','Premio','Código','Canjeado','Fecha canje'];
+  const lines=[head.map(q).join(';')].concat(allLogs.map(l=>[l.created_at?fmtDate(l.created_at):(l.time||''), l.spin_id, l.prize, l.code, l.redeemed?'Sí':'No', l.redeemed_at?fmtDate(l.redeemed_at):''].map(q).join(';')));
+  const blob=new Blob(['\ufeff'+lines.join('\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`giros-${CLIENT.storageKey}-${todayKey()}.csv`; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }
 async function redeemLog(rowId, btn){
   if(!sbConnected){showToast('⚠️ Sin conexión a Supabase');return;}
@@ -840,6 +899,7 @@ async function redeemLog(rowId, btn){
   try{
     await sbFetch(`logs?id=eq.${encodeURIComponent(rowId)}`,'PATCH',{redeemed:true,redeemed_at:new Date().toISOString()});
     showToast('✅ Premio canjeado');
+    const L=allLogs.find(l=>l.id===rowId); if(L){ L.redeemed=true; L.redeemed_at=new Date().toISOString(); } renderStats();
     const row=btn.closest('.log-item'); row.style.opacity='0.45';
     row.querySelector('.log-prize').style.textDecoration='line-through';
     const badge=document.createElement('span'); badge.style.cssText='font-size:10px;color:var(--green);font-weight:700;white-space:nowrap;'; badge.textContent='✅ Canjeado';
@@ -856,16 +916,28 @@ async function deleteLog(rowId, spinId, btn){
     else if(rowId && !sbConnected) throw new Error('sin conexión a Supabase');
     // En la copia local de este dispositivo
     if(spinId){ const local=lsGet('logs',[]).filter(l=>l.spin_id!==spinId); lsSet('logs',local); }
+    allLogs=allLogs.filter(l=>!((rowId && l.id===rowId) || (spinId && l.spin_id===spinId))); renderStats();
     const row=btn.closest('.log-item');
     row.style.transition='opacity .25s'; row.style.opacity='0';
-    setTimeout(()=>{ row.remove(); if(!document.querySelector('#logList .log-item')) renderLogs([]); },250);
+    setTimeout(()=>{ renderLogs(); },250);
     showToast('🗑️ Giro borrado');
   }catch(e){ btn.disabled=false; btn.textContent='🗑 Borrar'; showToast('❌ Error: '+e.message); }
 }
-function renderLogs(logs){
+function renderLogs(){
   const list=document.getElementById('logList');
-  if(!logs.length){ list.innerHTML='<div class="log-empty">Sin giros registrados aún</div>'; return; }
-  list.innerHTML=logs.slice(0,30).map(l=>{
+  const q=(document.getElementById('logSearch').value||'').trim().toLowerCase();
+  const f=document.getElementById('logFilter').value;
+  let logs=allLogs.filter(l=>{
+    const noPrize=isRetry({code:l.code});
+    if(f==='pending' && (l.redeemed||noPrize)) return false;
+    if(f==='redeemed' && !l.redeemed) return false;
+    if(q && !(`${l.spin_id||''} ${l.prize||''} ${l.code||''}`.toLowerCase().includes(q))) return false;
+    return true;
+  });
+  document.getElementById('logCount').textContent = allLogs.length
+    ? (logs.length===allLogs.length ? `${allLogs.length} giros en el historial` : `Mostrando ${logs.length} de ${allLogs.length} giros`) : '';
+  if(!logs.length){ list.innerHTML=`<div class="log-empty">${allLogs.length?'Ningún giro coincide con la búsqueda':'Sin giros registrados aún'}</div>`; return; }
+  list.innerHTML=logs.map(l=>{
     const redeemed=!!l.redeemed, noPrize=isRetry({code:l.code});
     const action = redeemed ? `<span style="font-size:10px;color:var(--green);font-weight:700;white-space:nowrap;">✅ Canjeado</span>`
       : noPrize ? `<span style="font-size:10px;color:var(--muted2);font-weight:600;">Sin premio</span>`
